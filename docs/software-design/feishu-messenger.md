@@ -38,8 +38,8 @@ boot
 
 ### 2.2 Feishu account binding
 
-- Firmware contains the product application's App ID/Secret. A user authorizes only their own account and never enters application secrets.
-- Any Feishu user who can access the application and grants the required permissions can bind; this is not fixed to the developer's account. Tenant application availability and administrator policies can still restrict users.
+- Generic firmware contains no Feishu App ID/Secret. An advanced owner writes their own developer application's credentials locally over physical USB or Web Serial before authorization.
+- The device then displays a device-authorization QR for that owner-provided application. The intended user must be included in that application's availability and grant the requested permissions; tenant administrators can still restrict application access or permissions.
 - The screen shows the device authorization QR and remaining lifetime. If it is not scanned, expires, or a transient service error occurs, the device replaces it automatically instead of entering a permanent failure page.
 - Once the device has safely stored both access and refresh tokens, it shows binding success and automatically opens conversations. A failure to load profile or conversations must not turn a successful binding into a binding failure.
 - After restart, cached tokens are preferred. Rebinding is required only after Feishu explicitly rejects the user token and also rejects refresh. DNS, TLS, timeout, or offline errors must not clear binding.
@@ -85,7 +85,7 @@ Startup and interaction use explicit state machines:
 ```text
 BOOT → WIFI_CHECK → AP_PROVISION → WIFI_CONNECT
                     ↓ success
-       BIND_CHECK → QR_BIND → INITIAL_SYNC → CHATS
+       APP_CHECK → USB_PROVISION → QR_BIND → INITIAL_SYNC → CHATS
 
 CHATS ⇄ MESSAGES → RECORDING → TRANSCRIBING → REVIEW → SEND → MESSAGES
 ```
@@ -103,7 +103,8 @@ Logs contain only state, HTTP status, Feishu business error code, free heap, and
 
 ## 7. Authentication, storage, and memory boundaries
 
-- Product application credentials come from build configuration. User tokens live in a dedicated NVS partition. Refresh-token rotation writes and verifies a new value before switching, so at least one usable version survives power loss.
+- Firmware and release images contain no Feishu App ID, App Secret, or user token. An advanced user provisions their own Feishu application over the physical USB Serial/JTAG link after flashing. The device then performs device authorization for that application and stores the resulting user tokens locally.
+- The versioned USB protocol is accepted only while onboarding has no application credentials. Importing another application clears access and refresh tokens from the previous application. App Secret and tokens must never appear in logs or a generated firmware image.
 - Access tokens can exceed 7 KiB. TLS completes its handshake before firmware writes the long `Authorization` header in chunks, preventing simultaneous copies of the token and large HTTP/TLS buffers.
 - User tokens serve chat, message, and reply APIs. A tenant token serves ASR only and is fetched on demand. It is not prefetched during startup.
 - JSON responses stream into bounded storage and are parsed after TLS/HTTP objects are released. UI models have fixed capacities and UTF-8-safe truncation.

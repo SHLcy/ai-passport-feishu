@@ -1,10 +1,12 @@
 #include "setup_portal.h"
 
 #include "demo_radio.h"
+#include "feishu_store.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -26,6 +28,13 @@ static volatile bool s_dns_running;
 static volatile bool s_received;
 static wifi_ap_record_t s_networks[12];
 static uint16_t s_network_count;
+
+typedef enum {
+    PORTAL_WIFI = 0,
+    PORTAL_FEISHU,
+} portal_mode_t;
+
+static portal_mode_t s_mode;
 
 typedef struct __attribute__((packed)) {
     uint16_t id;
@@ -124,19 +133,43 @@ static void html_escape(char *output, size_t capacity, const char *input)
 
 static esp_err_t root_get(httpd_req_t *request)
 {
+    if (s_mode == PORTAL_FEISHU) {
+        httpd_resp_set_type(request, "text/html; charset=utf-8");
+        return httpd_resp_send(request,
+            "<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<meta charset=utf-8><title>AI Passport 私人飞书</title><style>body{font-family:-apple-system,"
+            "sans-serif;background:#f5f4ee;margin:0;padding:28px;color:#161616}.card{max-width:480px;"
+            "margin:auto;background:white;padding:24px;border-radius:18px;box-shadow:0 8px 30px #0001}"
+            "h1{font-size:24px}label{display:block;margin-top:18px;font-weight:600}input,button{"
+            "box-sizing:border-box;width:100%;font-size:17px;padding:13px;margin-top:8px;border:1px solid #ccc;"
+            "border-radius:10px}button{background:#3370ff;color:white;border:0;font-weight:700;margin-top:24px}"
+            ".tip{color:#666;line-height:1.55}.warn{background:#fff4d9;padding:12px;border-radius:10px}"
+            "</style></head><body><div class=card><h1>配置自己的飞书应用</h1>"
+            "<p class=tip>凭据从手机直接发送到当前设备，不经过互联网或发布者服务器。</p>"
+            "<p class=warn>请只填写你本人创建或有权使用的飞书自建应用。</p>"
+            "<form method=post action=/configure><label>App ID</label>"
+            "<input name=app_id required maxlength=63 placeholder=cli_... autocomplete=off>"
+            "<label>App Secret</label><input name=app_secret type=password required maxlength=127 "
+            "autocomplete=new-password><button type=submit>写入设备并继续</button></form>"
+            "</div></body></html>", HTTPD_RESP_USE_STRLEN);
+    }
     char *page = calloc(1, 7168);
     size_t used = 0;
     if (page == NULL) return ESP_ERR_NO_MEM;
     used += snprintf(page + used, 7168 - used,
         "<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<meta charset=utf-8><title>AI Passport 配网</title><style>body{font-family:-apple-system,"
+        "<meta charset=utf-8><title>AI Passport 首次设置</title><style>body{font-family:-apple-system,"
         "sans-serif;background:#f5f4ee;margin:0;padding:28px;color:#161616}.card{max-width:480px;"
         "margin:auto;background:white;padding:24px;border-radius:18px;box-shadow:0 8px 30px #0001}"
         "h1{font-size:24px}label{display:block;margin-top:18px;font-weight:600}select,input,button{"
         "box-sizing:border-box;width:100%%;font-size:17px;padding:13px;margin-top:8px;border:1px solid #ccc;"
         "border-radius:10px}button{background:#3370ff;color:white;border:0;font-weight:700;margin-top:24px}"
-        ".tip{color:#666;line-height:1.55}</style></head><body><div class=card><h1>连接家庭 Wi-Fi</h1>"
-        "<p class=tip>选择网络并输入密码。连接成功后，设备会显示飞书绑定二维码。</p>"
+        ".tip{color:#666;line-height:1.55}.prep{background:#eef4ff;padding:12px;border-radius:10px;line-height:1.55}"
+        "</style></head><body><div class=card><h1>完成设备首次设置</h1>"
+        "<p class=prep><b>填写前请准备自己的飞书应用：</b><br>1. 在飞书开放平台创建企业自建应用；"
+        "<br>2. 开通设备所需权限并发布；<br>3. 确保当前飞书账号在应用可用范围；"
+        "<br>4. 在“凭证与基础信息”复制 App ID 和 App Secret。</p>"
+        "<p class=tip>飞书 App ID 和 App Secret 为必填。应用凭据只从手机发给当前设备。</p>"
         "<form method=post action=/configure><label>Wi-Fi 网络</label><select name=ssid required>");
     for (uint16_t i = 0; i < s_network_count && used < 6500; ++i) {
         char escaped[160];
@@ -147,7 +180,10 @@ static esp_err_t root_get(httpd_req_t *request)
     }
     snprintf(page + used, 7168 - used,
         "</select><label>Wi-Fi 密码</label><input name=password type=password maxlength=64 "
-        "autocomplete=current-password><button type=submit>连接并继续</button></form></div></body></html>");
+        "autocomplete=current-password><label>飞书 App ID</label>"
+        "<input name=app_id required maxlength=63 placeholder=cli_... autocomplete=off>"
+        "<label>飞书 App Secret</label><input name=app_secret type=password required maxlength=127 "
+        "autocomplete=new-password><button type=submit>保存并继续</button></form></div></body></html>");
     httpd_resp_set_type(request, "text/html; charset=utf-8");
     esp_err_t err = httpd_resp_send(request, page, HTTPD_RESP_USE_STRLEN);
     free(page);
@@ -192,9 +228,71 @@ static bool url_decode_field(const char *body, const char *name,
     return false;
 }
 
+static esp_err_t save_feishu_form(const char *body)
+{
+    feishu_credentials_t *credentials = calloc(1, sizeof(*credentials));
+    if (credentials == NULL) return ESP_ERR_NO_MEM;
+    bool valid = url_decode_field(body, "app_id", credentials->app_id,
+                                  sizeof(credentials->app_id)) &&
+                 url_decode_field(body, "app_secret", credentials->app_secret,
+                                  sizeof(credentials->app_secret));
+    if (valid) {
+        char *values[] = { credentials->app_id, credentials->app_secret };
+        for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+            char *start = values[i];
+            while (*start != '\0' && isspace((unsigned char)*start)) ++start;
+            if (start != values[i]) memmove(values[i], start, strlen(start) + 1);
+            size_t length = strlen(values[i]);
+            while (length > 0 &&
+                   isspace((unsigned char)values[i][length - 1])) {
+                values[i][--length] = '\0';
+            }
+        }
+        valid = credentials->app_id[0] != '\0' &&
+                credentials->app_secret[0] != '\0';
+    }
+    esp_err_t err = valid ? feishu_store_save_app_credentials(credentials) :
+                            ESP_ERR_INVALID_ARG;
+    memset(credentials, 0, sizeof(*credentials));
+    free(credentials);
+    return err;
+}
+
 static esp_err_t configure_post(httpd_req_t *request)
 {
-    char body[512] = { 0 };
+    char body[1024] = { 0 };
+    if (s_mode == PORTAL_FEISHU) {
+        int expected = request->content_len;
+        int received = 0;
+        if (expected <= 0 || expected >= (int)sizeof(body)) {
+            httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid form");
+            return ESP_FAIL;
+        }
+        while (received < expected) {
+            int count = httpd_req_recv(request, body + received,
+                                       expected - received);
+            if (count <= 0) {
+                memset(body, 0, sizeof(body));
+                return ESP_FAIL;
+            }
+            received += count;
+        }
+        esp_err_t err = save_feishu_form(body);
+        memset(body, 0, sizeof(body));
+        if (err != ESP_OK) {
+            httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
+                                "App ID or App Secret is invalid");
+            return err;
+        }
+        httpd_resp_set_type(request, "text/html; charset=utf-8");
+        httpd_resp_send(request,
+            "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<meta charset=utf-8><h2>飞书应用已保存</h2>"
+            "<p>请回到设备，用飞书扫描接下来显示的授权二维码。</p>",
+            HTTPD_RESP_USE_STRLEN);
+        s_received = true;
+        return ESP_OK;
+    }
     char ssid[33] = { 0 };
     char password[65] = { 0 };
     wifi_config_t config = { 0 };
@@ -211,14 +309,25 @@ static esp_err_t configure_post(httpd_req_t *request)
         received += count;
     }
     if (!url_decode_field(body, "ssid", ssid, sizeof(ssid))) {
-        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Wi-Fi required");
+        memset(password, 0, sizeof(password));
+        memset(body, 0, sizeof(body));
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
+                            "Wi-Fi network is required");
         return ESP_FAIL;
     }
     url_decode_field(body, "password", password, sizeof(password));
+    esp_err_t err = save_feishu_form(body);
+    if (err != ESP_OK) {
+        memset(password, 0, sizeof(password));
+        memset(body, 0, sizeof(body));
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
+                            "Feishu App ID or App Secret is invalid");
+        return err;
+    }
     memcpy(config.sta.ssid, ssid, strlen(ssid));
     memcpy(config.sta.password, password, strlen(password));
     config.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &config);
+    err = esp_wifi_set_config(WIFI_IF_STA, &config);
     memset(password, 0, sizeof(password));
     memset(body, 0, sizeof(body));
     if (err != ESP_OK) {
@@ -229,7 +338,8 @@ static esp_err_t configure_post(httpd_req_t *request)
     httpd_resp_set_type(request, "text/html; charset=utf-8");
     httpd_resp_send(request,
         "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<meta charset=utf-8><h2>Wi-Fi 已保存</h2><p>请回到设备，接下来扫码绑定飞书。</p>",
+        "<meta charset=utf-8><h2>Wi-Fi 和飞书应用已保存</h2>"
+        "<p>请回到设备，接下来用飞书扫描授权二维码。</p>",
         HTTPD_RESP_USE_STRLEN);
     s_received = true;
     return ESP_OK;
@@ -243,7 +353,20 @@ static esp_err_t redirect_404(httpd_req_t *request, httpd_err_code_t error)
     return httpd_resp_send(request, "Open setup", HTTPD_RESP_USE_STRLEN);
 }
 
-esp_err_t setup_portal_start(setup_portal_info_t *info)
+static void random_password(char output[17])
+{
+    static const char alphabet[] =
+        "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    uint8_t random[12];
+    esp_fill_random(random, sizeof(random));
+    for (size_t i = 0; i < sizeof(random); ++i) {
+        output[i] = alphabet[random[i] % (sizeof(alphabet) - 1)];
+    }
+    output[sizeof(random)] = '\0';
+    memset(random, 0, sizeof(random));
+}
+
+static esp_err_t portal_start(setup_portal_info_t *info, portal_mode_t mode)
 {
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     wifi_config_t config = { 0 };
@@ -253,6 +376,7 @@ esp_err_t setup_portal_start(setup_portal_info_t *info)
 
     if (info == NULL) return ESP_ERR_INVALID_ARG;
     memset(info, 0, sizeof(*info));
+    s_mode = mode;
     s_received = false;
     err = demo_radio_nvs_prepare();
     if (err == ESP_OK) err = demo_radio_network_prepare();
@@ -270,12 +394,18 @@ esp_err_t setup_portal_start(setup_portal_info_t *info)
     }
     s_wifi_initialized = true;
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    snprintf(info->ssid, sizeof(info->ssid), "FoloPassport-%02X%02X",
+    snprintf(info->ssid, sizeof(info->ssid),
+             mode == PORTAL_FEISHU ? "FoloFeishu-%02X%02X" :
+                                     "FoloPassport-%02X%02X",
              mac[4], mac[5]);
     memcpy(config.ap.ssid, info->ssid, strlen(info->ssid));
     config.ap.ssid_len = strlen(info->ssid);
     config.ap.channel = 1;
-    config.ap.authmode = WIFI_AUTH_OPEN;
+    // Both first-run Wi-Fi setup and app-only recovery carry secrets. Protect
+    // every local form with a fresh password embedded only in the screen QR.
+    random_password(info->password);
+    memcpy(config.ap.password, info->password, strlen(info->password));
+    config.ap.authmode = WIFI_AUTH_WPA2_PSK;
     config.ap.max_connection = 4;
     err = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
     if (err == ESP_OK) err = esp_wifi_set_mode(WIFI_MODE_APSTA);
@@ -285,12 +415,14 @@ esp_err_t setup_portal_start(setup_portal_info_t *info)
         setup_portal_stop();
         return err;
     }
-    wifi_scan_config_t scan = { .show_hidden = false };
-    if (esp_wifi_scan_start(&scan, true) == ESP_OK) {
-        s_network_count = sizeof(s_networks) / sizeof(s_networks[0]);
-        esp_wifi_scan_get_ap_records(&s_network_count, s_networks);
-    } else {
-        s_network_count = 0;
+    if (mode == PORTAL_WIFI) {
+        wifi_scan_config_t scan = { .show_hidden = false };
+        if (esp_wifi_scan_start(&scan, true) == ESP_OK) {
+            s_network_count = sizeof(s_networks) / sizeof(s_networks[0]);
+            esp_wifi_scan_get_ap_records(&s_network_count, s_networks);
+        } else {
+            s_network_count = 0;
+        }
     }
     snprintf(info->address, sizeof(info->address), "192.168.4.1");
     http_config.lru_purge_enable = true;
@@ -312,8 +444,20 @@ esp_err_t setup_portal_start(setup_portal_info_t *info)
         s_dns_running = false;
         s_dns_task = NULL;
     }
-    ESP_LOGI(TAG, "setup AP ready: %s", info->ssid);
+    ESP_LOGI(TAG, "%s AP ready: %s",
+             mode == PORTAL_FEISHU ? "Feishu setup" : "Wi-Fi setup",
+             info->ssid);
     return ESP_OK;
+}
+
+esp_err_t setup_portal_start(setup_portal_info_t *info)
+{
+    return portal_start(info, PORTAL_WIFI);
+}
+
+esp_err_t setup_portal_start_feishu(setup_portal_info_t *info)
+{
+    return portal_start(info, PORTAL_FEISHU);
 }
 
 bool setup_portal_credentials_received(void)
@@ -350,4 +494,5 @@ void setup_portal_stop(void)
     }
     memset(s_networks, 0, sizeof(s_networks));
     s_network_count = 0;
+    s_mode = PORTAL_WIFI;
 }

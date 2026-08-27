@@ -19,6 +19,7 @@ idf_component_register(
          "feishu_http.c"
          "feishu_model.c"
          "feishu_network.c"
+         "feishu_provision.c"
          "feishu_store.c"
          "product_onboarding.c"
          "setup_portal.c"

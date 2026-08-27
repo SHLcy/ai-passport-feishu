@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- 将发布者内置飞书凭据改为高级用户自带应用：通用 Web Serial 固件不包含私人应用，同一网页可通过 USB 在本地写入用户自己的 App ID/Secret，随后由设备获取并保存自己的用户授权。
 - 新增发布后收尾流程：`issue-suggestions` skill 用于把用户反馈作为 issue 提交到上游项目；`experience-pr` skill 用于把可复用的开发经验作为文档 PR 提交；新增 `docs/experiences/` 目录保存单条经验文件；并配套 `after-release`、`file-issues` 与经验索引文档。
 - 修复飞书 device-code 轮询使用错误 token 地址的问题；未扫码时继续等待，临时网络错误自动重试，二维码过期后自动刷新。
 - 将 LVGL 的有限 CJK 子集替换为驻留 Flash 的 1-bit Source Han Sans 设备字库，覆盖 U+4E00-U+9FFF 和中文标点，解决首启引导及飞书动态消息里的缺字方块。

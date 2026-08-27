@@ -23,7 +23,7 @@ typedef enum {
     FEISHU_BINDING_FAILED,
 } feishu_binding_status_t;
 
-bool feishu_binding_factory_app_configured(void);
+bool feishu_binding_app_configured(void);
 esp_err_t feishu_binding_begin(feishu_binding_request_t *request);
 esp_err_t feishu_binding_poll(const feishu_binding_request_t *request,
                               feishu_binding_status_t *status,

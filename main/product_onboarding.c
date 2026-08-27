@@ -2,6 +2,7 @@
 
 #include "feishu_binding.h"
 #include "feishu_network.h"
+#include "feishu_provision.h"
 #include "feishu_store.h"
 #include "setup_portal.h"
 #include "ui_pixel.h"
@@ -19,6 +20,7 @@
 typedef enum {
     ONBOARD_CONNECTING = 0,
     ONBOARD_WIFI_SETUP,
+    ONBOARD_APP_SETUP,
     ONBOARD_BINDING,
     ONBOARD_SUCCESS,
     ONBOARD_ERROR,
@@ -86,8 +88,8 @@ static void worker_task(void *argument)
             goto finished;
         }
         char wifi_qr[96];
-        snprintf(wifi_qr, sizeof(wifi_qr), "WIFI:T:nopass;S:%s;;",
-                 s_state.portal.ssid);
+        snprintf(wifi_qr, sizeof(wifi_qr), "WIFI:T:WPA;S:%s;P:%s;;",
+                 s_state.portal.ssid, s_state.portal.password);
         update_state(ONBOARD_WIFI_SETUP, "", wifi_qr);
         while (!closing() && !setup_portal_credentials_received()) {
             vTaskDelay(pdMS_TO_TICKS(200));
@@ -112,15 +114,60 @@ static void worker_task(void *argument)
         update_state(ONBOARD_SUCCESS, "飞书已绑定", NULL);
         goto finished;
     }
-    if (!feishu_binding_factory_app_configured()) {
-        update_state(ONBOARD_ERROR, "固件尚未配置飞书应用", NULL);
-        goto finished;
+
+configure_owner_app:
+    if (!feishu_binding_app_configured()) {
+        update_state(ONBOARD_CONNECTING, "正在启动手机配置热点...", NULL);
+        feishu_network_stop();
+        err = setup_portal_start_feishu(&s_state.portal);
+        if (err != ESP_OK) {
+            update_state(ONBOARD_ERROR, "无法启动手机配置，请重启设备", NULL);
+            goto finished;
+        }
+        char app_qr[128];
+        snprintf(app_qr, sizeof(app_qr), "WIFI:T:WPA;S:%s;P:%s;;",
+                 s_state.portal.ssid, s_state.portal.password);
+        update_state(ONBOARD_APP_SETUP, "", app_qr);
+        bool usb_started = feishu_provision_start() == ESP_OK;
+        while (!closing() && !setup_portal_credentials_received() &&
+               !(usb_started && feishu_provision_credentials_received())) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        feishu_provision_stop();
+        setup_portal_stop();
+        memset(s_state.portal.password, 0, sizeof(s_state.portal.password));
+        if (closing()) goto finished;
+        if (!feishu_binding_app_configured()) {
+            update_state(ONBOARD_ERROR, "飞书应用配置无效，请重新写入", NULL);
+            goto finished;
+        }
+        update_state(ONBOARD_CONNECTING, "正在恢复网络连接...", NULL);
+        err = feishu_network_start(12000);
+        if (err != ESP_OK) {
+            update_state(ONBOARD_ERROR, "无法重新连接 Wi-Fi，请重启设备", NULL);
+            goto finished;
+        }
     }
 
     while (!closing()) {
         feishu_binding_request_t request = { 0 };
         err = feishu_binding_begin(&request);
         if (err != ESP_OK) {
+            if (err == ESP_ERR_INVALID_ARG) {
+                // Feishu explicitly rejected client authentication. Remove
+                // only Feishu state, keep Wi-Fi, and return to the phone-local
+                // owner-app portal. Transient errors keep the existing app.
+                esp_err_t clear_err = feishu_store_clear_credentials();
+                if (clear_err != ESP_OK) {
+                    update_state(ONBOARD_ERROR,
+                                 "无法清除错误凭据，请重启设备", NULL);
+                    goto finished;
+                }
+                update_state(ONBOARD_CONNECTING,
+                             "App ID 或 Secret 无效，正在重新配置...", NULL);
+                vTaskDelay(pdMS_TO_TICKS(1200));
+                goto configure_owner_app;
+            }
             update_state(ONBOARD_ERROR, "暂时无法发起飞书绑定", NULL);
             goto finished;
         }
@@ -193,6 +240,10 @@ static void render(lv_timer_t *timer)
             lv_label_set_text_fmt(s_body,
                 "扫码连接热点\n%s\n\n连接后会自动打开配网页面",
                 snapshot.portal.ssid);
+        } else if (snapshot.page == ONBOARD_APP_SETUP) {
+            lv_label_set_text(s_title, "配置私人飞书");
+            lv_label_set_text(s_body,
+                "手机扫码连接安全热点\n网页会自动打开\n填写自己的 App ID / Secret\n\nUSB 配置仍可作为备用");
         } else if (snapshot.page == ONBOARD_BINDING) {
             lv_label_set_text(s_title, "绑定飞书");
             lv_label_set_text(s_body,
@@ -205,7 +256,7 @@ static void render(lv_timer_t *timer)
             lv_label_set_text_fmt(s_body, "\n%s\n\n按 OK 重启重试", snapshot.status);
         }
     }
-    if ((snapshot.page == ONBOARD_WIFI_SETUP ||
+    if ((snapshot.page == ONBOARD_WIFI_SETUP || snapshot.page == ONBOARD_APP_SETUP ||
          snapshot.page == ONBOARD_BINDING) && snapshot.qr_data[0] != '\0' &&
         strcmp(snapshot.qr_data, s_rendered_qr) != 0) {
         lv_qrcode_set_data(s_qr, snapshot.qr_data);
@@ -277,6 +328,7 @@ void product_onboarding_exit(void)
         xSemaphoreTake(s_worker_done, pdMS_TO_TICKS(3000));
     }
     setup_portal_stop();
+    feishu_provision_stop();
     if (s_timer != NULL) { lv_timer_delete(s_timer); s_timer = NULL; }
     if (s_screen != NULL) { lv_obj_delete(s_screen); s_screen = NULL; }
     if (s_worker_done != NULL) {

@@ -4,8 +4,6 @@
 #include "esp_log.h"
 #include "feishu_http.h"
 #include "feishu_model.h"
-#include "sdkconfig.h"
-
 #include <stdlib.h>
 #include <string.h>
 
@@ -43,13 +41,6 @@ bool feishu_binding_take_access_token(char *output, size_t capacity)
     return available;
 }
 
-#ifndef CONFIG_FEISHU_PRODUCT_APP_ID
-#define CONFIG_FEISHU_PRODUCT_APP_ID ""
-#endif
-#ifndef CONFIG_FEISHU_PRODUCT_APP_SECRET
-#define CONFIG_FEISHU_PRODUCT_APP_SECRET ""
-#endif
-
 static bool copy_string(cJSON *object, const char *name, char *output,
                         size_t capacity)
 {
@@ -62,15 +53,43 @@ static bool copy_string(cJSON *object, const char *name, char *output,
     return true;
 }
 
-static char *request_body(const char *device_code)
+static bool log_begin_failure(esp_err_t transport_err,
+                              const feishu_http_response_t *response)
+{
+    if (transport_err != ESP_OK) {
+        ESP_LOGW(TAG, "device authorization transport failed: %s, HTTP %d",
+                 esp_err_to_name(transport_err), response->status_code);
+        return false;
+    }
+    char oauth_error[64] = { 0 };
+    int api_code = 0;
+    cJSON *root = response->body == NULL ? NULL :
+                  cJSON_ParseWithLength(response->body, response->length);
+    if (root != NULL) {
+        copy_string(root, "error", oauth_error, sizeof(oauth_error));
+        cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
+        if (cJSON_IsNumber(code)) api_code = code->valueint;
+    }
+    // Only public protocol identifiers and numeric status are logged. Never
+    // log the response body: some upstream errors may echo request fields.
+    ESP_LOGW(TAG,
+             "device authorization rejected: error=%s, code=%d, HTTP %d, bytes=%u",
+             oauth_error[0] == '\0' ? "unknown" : oauth_error, api_code,
+             response->status_code, (unsigned)response->length);
+    bool invalid_client = strcmp(oauth_error, "invalid_client") == 0;
+    cJSON_Delete(root);
+    return invalid_client;
+}
+
+static char *request_body(const feishu_credentials_t *credentials,
+                          const char *device_code)
 {
     cJSON *root = cJSON_CreateObject();
     char *body;
 
     if (root == NULL) return NULL;
-    cJSON_AddStringToObject(root, "client_id", CONFIG_FEISHU_PRODUCT_APP_ID);
-    cJSON_AddStringToObject(root, "client_secret",
-                           CONFIG_FEISHU_PRODUCT_APP_SECRET);
+    cJSON_AddStringToObject(root, "client_id", credentials->app_id);
+    cJSON_AddStringToObject(root, "client_secret", credentials->app_secret);
     if (device_code == NULL) {
         cJSON_AddStringToObject(root, "scope", FEISHU_PRODUCT_SCOPES);
     } else {
@@ -83,10 +102,14 @@ static char *request_body(const char *device_code)
     return body;
 }
 
-bool feishu_binding_factory_app_configured(void)
+bool feishu_binding_app_configured(void)
 {
-    return strncmp(CONFIG_FEISHU_PRODUCT_APP_ID, "cli_", 4) == 0 &&
-           CONFIG_FEISHU_PRODUCT_APP_SECRET[0] != '\0';
+    feishu_credentials_t *credentials = calloc(1, sizeof(*credentials));
+    if (credentials == NULL) return false;
+    bool configured = feishu_store_load_app_credentials(credentials) == ESP_OK;
+    memset(credentials, 0, sizeof(*credentials));
+    free(credentials);
+    return configured;
 }
 
 esp_err_t feishu_binding_begin(feishu_binding_request_t *request)
@@ -95,15 +118,22 @@ esp_err_t feishu_binding_begin(feishu_binding_request_t *request)
     cJSON *root = NULL;
     cJSON *number;
     char *body;
+    feishu_credentials_t *credentials = NULL;
     bool valid;
     esp_err_t err;
 
-    if (request == NULL || !feishu_binding_factory_app_configured()) {
+    if (request == NULL) return ESP_ERR_INVALID_ARG;
+    credentials = calloc(1, sizeof(*credentials));
+    if (credentials == NULL) return ESP_ERR_NO_MEM;
+    if (feishu_store_load_app_credentials(credentials) != ESP_OK) {
+        free(credentials);
         return ESP_ERR_INVALID_STATE;
     }
     clear_pending_access_token();
     memset(request, 0, sizeof(*request));
-    body = request_body(NULL);
+    body = request_body(credentials, NULL);
+    memset(credentials, 0, sizeof(*credentials));
+    free(credentials);
     if (body == NULL) return ESP_ERR_NO_MEM;
     err = feishu_http_request(HTTP_METHOD_POST, FEISHU_DEVICE_AUTH_URL, NULL,
                               body, 4096, &response);
@@ -111,7 +141,13 @@ esp_err_t feishu_binding_begin(feishu_binding_request_t *request)
     free(body);
     if (err != ESP_OK || response.status_code < 200 ||
         response.status_code >= 300) {
-        err = err == ESP_OK ? ESP_FAIL : err;
+        bool invalid_client = log_begin_failure(err, &response);
+        if (err == ESP_OK) {
+            // This code is consumed only by onboarding to reopen owner-app
+            // provisioning. Transport/server failures must never erase a
+            // valid application configuration.
+            err = invalid_client ? ESP_ERR_INVALID_ARG : ESP_FAIL;
+        }
         goto done;
     }
     root = cJSON_ParseWithLength(response.body, response.length);
@@ -136,6 +172,11 @@ esp_err_t feishu_binding_begin(feishu_binding_request_t *request)
     request->interval = cJSON_IsNumber(number) ? (uint32_t)number->valuedouble : 5;
     if (request->interval < 2) request->interval = 2;
     err = valid ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+    if (!valid) {
+        ESP_LOGW(TAG,
+                 "device authorization success response missing required fields: HTTP %d, bytes=%u",
+                 response.status_code, (unsigned)response.length);
+    }
 
 done:
     cJSON_Delete(root);
@@ -160,7 +201,12 @@ esp_err_t feishu_binding_poll(const feishu_binding_request_t *request,
     credentials->refresh_token[0] = '\0';
     access_token = calloc(1, FEISHU_TOKEN_MAX);
     if (access_token == NULL) return ESP_ERR_NO_MEM;
-    body = request_body(request->device_code);
+    if (feishu_store_load_app_credentials(credentials) != ESP_OK) {
+        memset(access_token, 0, FEISHU_TOKEN_MAX);
+        free(access_token);
+        return ESP_ERR_INVALID_STATE;
+    }
+    body = request_body(credentials, request->device_code);
     if (body == NULL) {
         free(access_token);
         return ESP_ERR_NO_MEM;
@@ -185,11 +231,6 @@ esp_err_t feishu_binding_poll(const feishu_binding_request_t *request,
             free(access_token);
             return ESP_ERR_INVALID_RESPONSE;
         }
-        feishu_utf8_copy(credentials->app_id, sizeof(credentials->app_id),
-                         CONFIG_FEISHU_PRODUCT_APP_ID);
-        feishu_utf8_copy(credentials->app_secret,
-                         sizeof(credentials->app_secret),
-                         CONFIG_FEISHU_PRODUCT_APP_SECRET);
         err = feishu_store_save_credentials(credentials);
         if (err == ESP_OK) {
             esp_err_t cache_err = feishu_store_save_access_token(access_token);

@@ -33,6 +33,9 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=24
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
+# Captive-portal teardown can make the Wi-Fi system event task format several
+# events back-to-back. The ESP-IDF default 2304-byte stack overflowed there.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 # LVGL's tiny-JPEG probe uses a 4KB local work buffer while the startup UI
 # inspects image sources. Keep the main task above that fixed decoder peak.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288

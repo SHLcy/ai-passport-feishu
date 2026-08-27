@@ -18,6 +18,13 @@ typedef struct {
 } feishu_credentials_t;
 
 esp_err_t feishu_store_load_credentials(feishu_credentials_t *credentials);
+// App credentials are provisioned by the device owner. The refresh token may
+// be empty until that app completes device authorization on this device.
+esp_err_t feishu_store_load_app_credentials(feishu_credentials_t *credentials);
+esp_err_t feishu_store_save_app_credentials(
+    const feishu_credentials_t *credentials);
+esp_err_t feishu_store_save_app_credentials_json(const uint8_t *json,
+                                                 size_t length);
 esp_err_t feishu_store_save_credentials(const feishu_credentials_t *credentials);
 esp_err_t feishu_store_save_credentials_json(const uint8_t *json, size_t length);
 esp_err_t feishu_store_save_refresh_token(const char *refresh_token);

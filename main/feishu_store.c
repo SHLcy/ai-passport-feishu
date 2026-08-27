@@ -11,12 +11,23 @@
 #define FEISHU_NVS_APP_ID "app_id"
 #define FEISHU_NVS_APP_SECRET "app_secret"
 #define FEISHU_NVS_REFRESH "refresh"
+#define FEISHU_NVS_OWNER_VERSION "owner_v"
+#define FEISHU_OWNER_VERSION 1
 #define FEISHU_NVS_SEEN "seen"
 #define FEISHU_CACHE_PARTITION "feishu_cache"
 #define FEISHU_CACHE_NAMESPACE "tokens"
 #define FEISHU_CACHE_ACCESS "access"
 
 static bool s_cache_ready;
+
+static esp_err_t require_owner_provisioning(nvs_handle_t handle)
+{
+    uint8_t version = 0;
+    esp_err_t err = nvs_get_u8(handle, FEISHU_NVS_OWNER_VERSION, &version);
+
+    if (err != ESP_OK) return err;
+    return version == FEISHU_OWNER_VERSION ? ESP_OK : ESP_ERR_INVALID_VERSION;
+}
 
 static esp_err_t cache_prepare(void)
 {
@@ -74,8 +85,13 @@ esp_err_t feishu_store_load_credentials(feishu_credentials_t *credentials)
     err = nvs_open(FEISHU_NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) return err;
 
-    err = load_string(handle, FEISHU_NVS_APP_ID, credentials->app_id,
-                      sizeof(credentials->app_id));
+    // Credentials from firmware predating owner provisioning have no marker.
+    // Refuse them so an OTA upgrade cannot silently retain a developer's app.
+    err = require_owner_provisioning(handle);
+    if (err == ESP_OK) {
+        err = load_string(handle, FEISHU_NVS_APP_ID, credentials->app_id,
+                          sizeof(credentials->app_id));
+    }
     if (err == ESP_OK) {
         err = load_string(handle, FEISHU_NVS_APP_SECRET,
                           credentials->app_secret,
@@ -86,6 +102,67 @@ esp_err_t feishu_store_load_credentials(feishu_credentials_t *credentials)
                               sizeof(credentials->refresh_token));
     }
     nvs_close(handle);
+    return err;
+}
+
+esp_err_t feishu_store_load_app_credentials(feishu_credentials_t *credentials)
+{
+    nvs_handle_t handle;
+    esp_err_t err;
+
+    if (credentials == NULL) return ESP_ERR_INVALID_ARG;
+    memset(credentials, 0, sizeof(*credentials));
+    err = nvs_open(FEISHU_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) return err;
+    err = require_owner_provisioning(handle);
+    if (err == ESP_OK) {
+        err = load_string(handle, FEISHU_NVS_APP_ID, credentials->app_id,
+                          sizeof(credentials->app_id));
+    }
+    if (err == ESP_OK) {
+        err = load_string(handle, FEISHU_NVS_APP_SECRET,
+                          credentials->app_secret,
+                          sizeof(credentials->app_secret));
+    }
+    nvs_close(handle);
+    if (err != ESP_OK || strncmp(credentials->app_id, "cli_", 4) != 0 ||
+        credentials->app_secret[0] == '\0') {
+        memset(credentials, 0, sizeof(*credentials));
+        return err == ESP_OK ? ESP_ERR_INVALID_RESPONSE : err;
+    }
+    return ESP_OK;
+}
+
+esp_err_t feishu_store_save_app_credentials(
+    const feishu_credentials_t *credentials)
+{
+    nvs_handle_t handle;
+    esp_err_t err;
+
+    if (credentials == NULL ||
+        strncmp(credentials->app_id, "cli_", 4) != 0 ||
+        credentials->app_secret[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    err = nvs_open(FEISHU_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(handle, FEISHU_NVS_APP_ID, credentials->app_id);
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, FEISHU_NVS_APP_SECRET,
+                          credentials->app_secret);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, FEISHU_NVS_OWNER_VERSION,
+                         FEISHU_OWNER_VERSION);
+    }
+    // Importing another app invalidates every token from the previous app.
+    if (err == ESP_OK) {
+        esp_err_t next = nvs_erase_key(handle, FEISHU_NVS_REFRESH);
+        if (next != ESP_OK && next != ESP_ERR_NVS_NOT_FOUND) err = next;
+    }
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err == ESP_OK) err = feishu_store_clear_access_token();
     return err;
 }
 
@@ -111,6 +188,10 @@ esp_err_t feishu_store_save_credentials(const feishu_credentials_t *credentials)
                            credentials->refresh_token,
                            strlen(credentials->refresh_token) + 1);
     }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, FEISHU_NVS_OWNER_VERSION,
+                         FEISHU_OWNER_VERSION);
+    }
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
     return err;
@@ -127,6 +208,35 @@ static bool json_string(cJSON *root, const char *name, char *output,
     }
     memcpy(output, item->valuestring, strlen(item->valuestring) + 1);
     return true;
+}
+
+esp_err_t feishu_store_save_app_credentials_json(const uint8_t *json,
+                                                 size_t length)
+{
+    feishu_credentials_t *credentials;
+    cJSON *root;
+    bool valid;
+
+    if (json == NULL || length == 0 || length > 512) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    credentials = calloc(1, sizeof(*credentials));
+    if (credentials == NULL) return ESP_ERR_NO_MEM;
+    root = cJSON_ParseWithLength((const char *)json, length);
+    if (root == NULL) {
+        free(credentials);
+        return ESP_ERR_INVALID_ARG;
+    }
+    valid = json_string(root, "app_id", credentials->app_id,
+                        sizeof(credentials->app_id)) &&
+            json_string(root, "app_secret", credentials->app_secret,
+                        sizeof(credentials->app_secret));
+    cJSON_Delete(root);
+    esp_err_t err = valid ? feishu_store_save_app_credentials(credentials) :
+                            ESP_ERR_INVALID_ARG;
+    memset(credentials, 0, sizeof(*credentials));
+    free(credentials);
+    return err;
 }
 
 esp_err_t feishu_store_save_credentials_json(const uint8_t *json, size_t length)
@@ -270,6 +380,10 @@ esp_err_t feishu_store_clear_credentials(void)
     }
     if (err == ESP_OK) {
         esp_err_t next = nvs_erase_key(handle, FEISHU_NVS_REFRESH);
+        if (next != ESP_OK && next != ESP_ERR_NVS_NOT_FOUND) err = next;
+    }
+    if (err == ESP_OK) {
+        esp_err_t next = nvs_erase_key(handle, FEISHU_NVS_OWNER_VERSION);
         if (next != ESP_OK && next != ESP_ERR_NVS_NOT_FOUND) err = next;
     }
     if (err == ESP_OK) err = nvs_commit(handle);

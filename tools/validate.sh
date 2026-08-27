@@ -32,6 +32,7 @@ run_static_checks() {
         tests/test_feishu_model.c main/feishu_model.c \
         -o "${test_dir}/test_feishu_model"
     "${test_dir}/test_feishu_model"
+    python3 -m unittest discover -s tests -p 'test_feishu_provision.py'
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }

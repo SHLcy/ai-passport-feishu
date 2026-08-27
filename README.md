@@ -2,16 +2,14 @@
   <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
+# FoloToy AI Passport
+
 # AI Passport Feishu Messenger
 
-This public fork develops a standalone Feishu messenger for the FoloToy AI
-Passport. The firmware runs directly on the ESP32-C3 device; it does not depend
-on a phone, desktop relay, or bridge service after setup.
-
-Active development is on
-[`feature/feishu-messenger`](https://github.com/SHLcy/ai-passport/tree/feature/feishu-messenger).
-The `main` branch stays close to the upstream FoloToy baseline for easier
-synchronization.
+This repository turns the FoloToy AI Passport into a standalone Feishu
+messenger. The firmware runs directly on the ESP32-C3 device; it does not
+depend on a phone, desktop relay, or bridge service after setup. The complete
+product code is maintained directly on `main`.
 
 ## Current features
 
@@ -42,9 +40,12 @@ Configure the Feishu application ID and secret through ESP-IDF project
 configuration. Never commit production credentials. Production devices should
 enable Flash Encryption and NVS Encryption.
 
+This project is based on the open-source
+[FoloToy/ai-passport](https://github.com/FoloToy/ai-passport) hardware and BSP
+baseline. Its original copyright notices and MIT License are retained.
+
 ## Contributing
 
 Issues, discussions, documentation improvements, tests, and pull requests are
 welcome. Please read [CONTRIBUTING.md](.github/CONTRIBUTING.md) before sending a
 change. The project is available under the [MIT License](LICENSE).
-

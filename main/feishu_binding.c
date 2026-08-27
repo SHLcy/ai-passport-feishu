@@ -12,8 +12,9 @@
 #define FEISHU_DEVICE_TOKEN_URL \
     "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
 #define FEISHU_PRODUCT_SCOPES \
-    "im:chat im:message im:message.send_as_user speech_to_text:speech " \
-    "offline_access"
+    "im:chat:readonly im:message im:message.p2p_msg:get_as_user " \
+    "im:message.group_msg:get_as_user im:message.send_as_user " \
+    "speech_to_text:speech offline_access"
 
 static const char *TAG = "feishu_binding";
 static char *s_pending_access_token;

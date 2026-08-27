@@ -49,6 +49,12 @@ class MobilePortalContractTest(unittest.TestCase):
         self.assertIn("feishu_store_clear_credentials()", onboarding)
         self.assertIn("goto configure_owner_app;", onboarding)
 
+    def test_user_message_read_scopes_are_requested(self):
+        binding = Path("main/feishu_binding.c").read_text(encoding="utf-8")
+        self.assertIn("im:chat:readonly", binding)
+        self.assertIn("im:message.p2p_msg:get_as_user", binding)
+        self.assertIn("im:message.group_msg:get_as_user", binding)
+
 
 if __name__ == "__main__":
     unittest.main()

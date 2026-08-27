@@ -24,8 +24,10 @@ The `lark-cli` executable is not copied to the device. An advanced user may conf
 Create a Feishu developer application owned by the person or organization that will own the device. Configure the application's availability so the intended account can use it, enable device authorization, and enable the minimum scopes required by the firmware:
 
 ```text
-im:chat
+im:chat:readonly
 im:message
+im:message.p2p_msg:get_as_user
+im:message.group_msg:get_as_user
 im:message.send_as_user
 speech_to_text:speech
 offline_access

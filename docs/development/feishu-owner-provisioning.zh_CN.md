@@ -24,8 +24,10 @@
 由设备所有者本人或所属组织创建飞书开发者应用。把应用可用范围配置为包含目标账号，开启设备授权，并开通固件所需的最小权限：
 
 ```text
-im:chat
+im:chat:readonly
 im:message
+im:message.p2p_msg:get_as_user
+im:message.group_msg:get_as_user
 im:message.send_as_user
 speech_to_text:speech
 offline_access

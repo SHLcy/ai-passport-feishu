@@ -3,12 +3,14 @@
 #pragma once
 
 #include "bsp_button.h"
+#include <stdbool.h>
 
 typedef struct {
     const char *name;
     void (*enter)(void);                          // 建自己的屏并载入
     void (*exit)(void);                           // 删屏、停定时器、释放资源
     void (*key)(bsp_btn_t btn, bsp_btn_ev_t ev);  // 收按键(长按确定已被 main 拦截)
+    bool (*back)(void);                           // 可选:消费长按返回;false=退到主菜单
 } demo_entry_t;
 
 // 各演示页(定义在各自的 .c 里)
@@ -32,3 +34,10 @@ void demo_ble_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 
 void demo_low_power_enter(void); void demo_low_power_exit(void);
 void demo_low_power_key(bsp_btn_t btn, bsp_btn_ev_t ev);
+
+void demo_blufi_enter(void); void demo_blufi_exit(void);
+void demo_blufi_key(bsp_btn_t btn, bsp_btn_ev_t ev);
+
+void demo_feishu_enter(void); void demo_feishu_exit(void);
+void demo_feishu_key(bsp_btn_t btn, bsp_btn_ev_t ev);
+bool demo_feishu_back(void);

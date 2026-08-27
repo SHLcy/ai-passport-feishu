@@ -11,6 +11,7 @@
 #include "bsp_battery.h"
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
 #include "demo.h"
+#include "product_onboarding.h"
 #include "ui_pixel.h"
 #include "lvgl.h"
 #include "esp_log.h"
@@ -19,13 +20,15 @@
 static const char *TAG = "main";
 
 static const demo_entry_t DEMOS[] = {
-    { "Display", demo_display_enter, demo_display_exit, demo_display_key },
-    { "Button",  demo_button_enter,  demo_button_exit,  demo_button_key  },
-    { "Audio",   demo_audio_enter,   demo_audio_exit,   demo_audio_key   },
-    { "Battery", demo_battery_enter, demo_battery_exit, demo_battery_key },
-    { "Wi-Fi",   demo_wifi_enter,    demo_wifi_exit,    demo_wifi_key    },
-    { "BLE",     demo_ble_enter,     demo_ble_exit,     demo_ble_key     },
-    { "Low Power", demo_low_power_enter, demo_low_power_exit, demo_low_power_key },
+    { "Feishu", demo_feishu_enter, demo_feishu_exit, demo_feishu_key, demo_feishu_back },
+    { "Setup", demo_blufi_enter, demo_blufi_exit, demo_blufi_key, NULL },
+    { "Display", demo_display_enter, demo_display_exit, demo_display_key, NULL },
+    { "Button",  demo_button_enter,  demo_button_exit,  demo_button_key, NULL },
+    { "Audio",   demo_audio_enter,   demo_audio_exit,   demo_audio_key, NULL },
+    { "Battery", demo_battery_enter, demo_battery_exit, demo_battery_key, NULL },
+    { "Wi-Fi",   demo_wifi_enter,    demo_wifi_exit,    demo_wifi_key, NULL },
+    { "BLE",     demo_ble_enter,     demo_ble_exit,     demo_ble_key, NULL },
+    { "Low Power", demo_low_power_enter, demo_low_power_exit, demo_low_power_key, NULL },
 };
 #define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
 
@@ -37,7 +40,7 @@ static lv_obj_t *s_cards[DEMO_COUNT];
 static lv_obj_t *s_rows[DEMO_COUNT];
 static lv_obj_t *s_mascot;
 static int  s_sel;                 // 当前选中项
-static int  s_active = -1;         // 当前所在演示页;-1 = 在菜单
+static int  s_active = -2;         // -2=首启引导;-1=调试菜单;>=0=功能页
 
 static void menu_refresh(void) {
     for (size_t i = 0; i < DEMO_COUNT; i++) {
@@ -74,15 +77,28 @@ static void enter_menu(void) {
     menu_build();
 }
 
+static void onboarding_complete(void) {
+    product_onboarding_exit();
+    s_active = 0;
+    demo_feishu_enter();
+}
+
 // 按键回调运行在 button 组件的任务里,操作 LVGL 必须加锁。
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     (void)user;
     if (!bsp_lvgl_lock(500)) return;
 
-    if (s_active >= 0) {
+    if (s_active == -2) {
+        product_onboarding_key(btn, ev);
+    } else if (s_active >= 0) {
         if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {     // 统一返回
-            DEMOS[s_active].exit();
-            enter_menu();
+            if (DEMOS[s_active].back == NULL || !DEMOS[s_active].back()) {
+                // 产品主页没有开发板演示菜单。会话首页已经是返回栈根部。
+                if (s_active != 0) {
+                    DEMOS[s_active].exit();
+                    enter_menu();
+                }
+            }
         } else {
             DEMOS[s_active].key(btn, ev);
         }
@@ -124,16 +140,20 @@ void app_main(void) {
     bsp_display_backlight(100);
 
     // 其余外设单项失败不阻塞:菜单里标 [FAIL],其他项照常可测。
-    s_ok[0] = true;                                   // Display 已确认可用
-    s_ok[1] = (bsp_button_init(on_key, NULL) == ESP_OK);
-    s_ok[2] = (bsp_audio_init() == ESP_OK);
-    s_ok[3] = (bsp_battery_init() == ESP_OK);
-    s_ok[4] = true;                                    // 页面内按需初始化并显示错误
-    s_ok[5] = true;
-    s_ok[6] = true;
+    bool buttons_ok = (bsp_button_init(on_key, NULL) == ESP_OK);
+    bool audio_ok = (bsp_audio_init() == ESP_OK);
+    bool battery_ok = (bsp_battery_init() == ESP_OK);
+    for (size_t i = 0; i < DEMO_COUNT; ++i) s_ok[i] = true;
+    s_ok[0] = buttons_ok && audio_ok;
+    s_ok[3] = buttons_ok;
+    s_ok[4] = audio_ok;
+    s_ok[5] = battery_ok;
 
-    if (bsp_lvgl_lock(1000)) { enter_menu(); bsp_lvgl_unlock(); }
+    if (bsp_lvgl_lock(1000)) {
+        product_onboarding_enter(onboarding_complete);
+        bsp_lvgl_unlock();
+    }
 
     ESP_LOGI(TAG, "就绪:Display=%d Button=%d Audio=%d Battery=%d",
-             s_ok[0], s_ok[1], s_ok[2], s_ok[3]);
+             true, buttons_ok, audio_ok, battery_ok);
 }

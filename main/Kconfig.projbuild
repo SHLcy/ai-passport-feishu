@@ -1,0 +1,17 @@
+menu "FoloToy product configuration"
+
+config FEISHU_PRODUCT_APP_ID
+    string "Factory Feishu application ID"
+    default ""
+    help
+        Feishu app ID provisioned by the firmware publisher. End users never
+        enter this value during device setup.
+
+config FEISHU_PRODUCT_APP_SECRET
+    string "Factory Feishu application secret"
+    default ""
+    help
+        Feishu app secret provisioned by the firmware publisher. Production
+        devices must also enable Flash Encryption and NVS Encryption.
+
+endmenu

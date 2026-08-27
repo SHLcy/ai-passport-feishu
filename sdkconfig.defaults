@@ -21,12 +21,21 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_USE_QRCODE=y
+CONFIG_LV_USE_FS_STDIO=y
+CONFIG_LV_FS_STDIO_LETTER=83
+CONFIG_LV_FS_STDIO_PATH="/feishu/"
+CONFIG_LV_FS_STDIO_CACHE_SIZE=0
+CONFIG_LV_USE_TJPGD=y
 # LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
 # 本 demo UI 简单,24KB 足够;若自建复杂界面出现绘制卡死/看门狗,调大此值。
 CONFIG_LV_MEM_SIZE_KILOBYTES=24
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
+# LVGL's tiny-JPEG probe uses a 4KB local work buffer while the startup UI
+# inspects image sources. Keep the main task above that fixed decoder peak.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
 
 # --- Bluetooth LE / NimBLE ---
 # ESP32-C3 仅支持 BLE；示例只启用单连接 peripheral 所需的最小 host 配置。
@@ -39,3 +48,15 @@ CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY=n
 CONFIG_BT_NIMBLE_NVS_PERSIST=n
+CONFIG_BT_NIMBLE_BLUFI_ENABLE=y
+
+# --- HTTPS / BLUFI security ---
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_DHM_C=y
+CONFIG_MBEDTLS_HARDWARE_MPI=n
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+# Feishu user tokens make the Authorization header about 8 KB. Keep outgoing
+# TLS records below the ESP32-C3 TCP send buffer (5760 bytes), so esp_http_client
+# can transmit the header as multiple records instead of stalling on EAGAIN.
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
